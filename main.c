@@ -7,8 +7,8 @@ static void usage(const char *prog) {
     fprintf(stderr,
             "IoT-SDK v.%s\n"
             "Usage: %s OPTIONS\n"
-            "  -s ADDR     - mqtt server address, default: '%s'\n"
-            "  -k n        - mqtt timeout, default: '%d'\n"
+            "  -s ADDR     - local mqtt server address, default: '%s'\n"
+            "  -a n        - local mqtt timeout, default: '%d'\n"
             "  -x PATH     - apmgr callback lua script, default: '%s'\n"
             "  -b n        - ap state begin, default: '%d', min: 1\n"
             "  -e n        - ap state end, default: '%d', min: begin+1\n"
@@ -24,7 +24,7 @@ static void parse_args(int argc, char *argv[], struct apmgr_option *opts) {
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-s") == 0) {
             opts->mqtt_serve_address = argv[++i];
-        } else if (strcmp(argv[i], "-k") == 0) {
+        } else if (strcmp(argv[i], "-a") == 0) {
             opts->mqtt_keepalive = atoi(argv[++i]);
             if (opts->mqtt_keepalive < 6) {
                 opts->mqtt_keepalive = 6;
