@@ -1,8 +1,8 @@
 #include <iot/mongoose.h>
 #include <iot/cJSON.h>
 #include <iot/iot.h>
-#include "apmgr.h"
-#include "ap.h"
+#include "controller.h"
+#include "agent.h"
 #include "callback.h"
 
 static void mqtt_ev_open_cb(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
@@ -16,7 +16,7 @@ static void mqtt_ev_error_cb(struct mg_connection *c, int ev, void *ev_data, voi
 
 static void mqtt_ev_poll_cb(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
 
-    struct apmgr_private *priv = (struct apmgr_private*)c->mgr->userdata;
+    struct controller_private *priv = (struct controller_private*)c->mgr->userdata;
     if (!priv->cfg.opts->mqtt_keepalive) //no keepalive
         return;
 
@@ -32,7 +32,7 @@ static void mqtt_ev_poll_cb(struct mg_connection *c, int ev, void *ev_data, void
 
 static void mqtt_ev_close_cb(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
 
-    struct apmgr_private *priv = (struct apmgr_private*)c->mgr->userdata;
+    struct controller_private *priv = (struct controller_private*)c->mgr->userdata;
     MG_INFO(("mqtt client connection closed"));
     priv->mqtt_conn = NULL; // Mark that we're closed
 
@@ -41,10 +41,10 @@ static void mqtt_ev_close_cb(struct mg_connection *c, int ev, void *ev_data, voi
 static void mqtt_ev_mqtt_open_cb(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
 
     struct mg_str subt_mqtt_event = mg_str("$iot-mqtt-events");
-    struct mg_str subt_mqtt_state = mg_str("mg/apmgr/state");
-    struct mg_str subt_rpc_response = mg_str("device/+/rpc/response/apmgr/+");
+    struct mg_str subt_mqtt_state = mg_str("mg/iot-controller/state");
+    struct mg_str subt_rpc_response = mg_str("device/+/rpc/response/iot-controller/+");
 
-    struct apmgr_private *priv = (struct apmgr_private*)c->mgr->userdata;
+    struct controller_private *priv = (struct controller_private*)c->mgr->userdata;
 
     MG_INFO(("connect to mqtt server: %s", priv->cfg.opts->mqtt_serve_address));
     struct mg_mqtt_opts sub_opts;
@@ -69,7 +69,7 @@ static void mqtt_ev_mqtt_open_cb(struct mg_connection *c, int ev, void *ev_data,
 static void mqtt_ev_mqtt_cmd_cb(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
 
     struct mg_mqtt_message *mm = (struct mg_mqtt_message *) ev_data;
-    struct apmgr_private *priv = (struct apmgr_private*)c->mgr->userdata;
+    struct controller_private *priv = (struct controller_private*)c->mgr->userdata;
 
     if (mm->cmd == MQTT_CMD_PINGRESP) {
         priv->pong_active = mg_millis();
@@ -78,23 +78,23 @@ static void mqtt_ev_mqtt_cmd_cb(struct mg_connection *c, int ev, void *ev_data, 
 
 static void mqtt_ev_mqtt_msg_mqtt_events_cb(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
     struct mg_mqtt_message *mm = (struct mg_mqtt_message *)ev_data;
-    struct apmgr_private *priv = (struct apmgr_private*)c->mgr->userdata;
+    struct controller_private *priv = (struct controller_private*)c->mgr->userdata;
     if (!mg_strcmp(mm->data, mg_str("connected")) || !mg_strcmp(mm->data, mg_str("disconnected"))) {
         //mqtt client connected or disconnected, need sync client list
-        //set ap_list_synced to false, timer_state_fn will send sync request message
-        priv->ap_list_synced = false;
+        //set agent_list_synced to false, timer_state_fn will send sync request message
+        priv->agent_list_synced = false;
     }
 }
 
 static void mqtt_ev_mqtt_msg_mqtt_state_cb(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
     struct mg_mqtt_message *mm = (struct mg_mqtt_message *)ev_data;
-    struct apmgr_private *priv = (struct apmgr_private*)c->mgr->userdata;
+    struct controller_private *priv = (struct controller_private*)c->mgr->userdata;
     cJSON *root = cJSON_ParseWithLength(mm->data.ptr, mm->data.len);
     cJSON *code = cJSON_GetObjectItem(root, "code");
     cJSON *data = cJSON_GetObjectItem(root, "data");
     if (cJSON_IsNumber(code) && (int)cJSON_GetNumberValue(code) == 0) {
-        priv->ap_list_synced = true;
-        priv->ap_list_synced_time = mg_millis()/1000;
+        priv->agent_list_synced = true;
+        priv->agent_list_synced_time = mg_millis()/1000;
         if (cJSON_IsArray(data)) {
             int size = cJSON_GetArraySize(data);
             for (int i = 0; i < size; i++) {
@@ -112,56 +112,49 @@ static void mqtt_ev_mqtt_msg_mqtt_state_cb(struct mg_connection *c, int ev, void
                 uint64_t connected_t = (uint64_t)cJSON_GetNumberValue(connected);
 
                 uint32_t crc = mg_crc32(0, id_str, strlen(id_str));
-                uint32_t index = crc % AP_HASH_SIZE;
+                uint32_t index = crc % AGENT_HASH_SIZE;
 
-                struct ap *ap = priv->aps[index];
-                while (ap) {
-                    if (!mg_casecmp(ap->info.dev_id, id_str)) {// maybe different dev_id, but same crc
+                struct agent *agent = priv->agents[index];
+                while (agent) {
+                    if (!mg_casecmp(agent->info.dev_id, id_str)) {// maybe different dev_id, but same crc
                         break;
                     }
-                    ap = ap->next;
+                    agent = agent->next;
                 }
-                if (ap == NULL) {
-                    //add new ap
-                    ap = calloc(1, sizeof(struct ap));
-                    strncpy(ap->info.dev_id, id_str, sizeof(ap->info.dev_id)-1);
-                    ap->status.connected = connected_t;
-                    strncpy(ap->status.ip, ip_str, sizeof(ap->status.ip)-1);
-                    ap->state = priv->cfg.opts->state_begin;
-                    LIST_ADD_HEAD(struct ap, &priv->aps[index], ap);
+                if (agent == NULL) {
+                    //add new agent
+                    agent = calloc(1, sizeof(struct agent));
+                    strncpy(agent->info.dev_id, id_str, sizeof(agent->info.dev_id)-1);
+                    agent->status.connected = connected_t;
+                    strncpy(agent->status.ip, ip_str, sizeof(agent->status.ip)-1);
+                    agent->state = priv->cfg.opts->state_begin;
+                    LIST_ADD_HEAD(struct agent, &priv->agents[index], agent);
 
-                    //add ap event, handle by ap state machine
-                    struct ap_event *e = calloc(1, sizeof(struct ap_event));
-                    e->ap = ap;
-                    LIST_ADD_HEAD(struct ap_event, &priv->ap_events, e);
                 } else {
-                    if (ap->status.connected < connected_t) { //handle reconnected same dev_id
-                        //ap reconnected, update ap status
-                        ap->status.connected = connected_t;
-                        strncpy(ap->status.ip, ip_str, sizeof(ap->status.ip)-1);
-                        ap->state = priv->cfg.opts->state_begin;
-                        ap->state_timeout = 0;
+                    if (agent->status.connected < connected_t) { //handle reconnected same dev_id
+                        //agent reconnected, update agent status
+                        agent->status.connected = connected_t;
+                        strncpy(agent->status.ip, ip_str, sizeof(agent->status.ip)-1);
+                        agent->state = priv->cfg.opts->state_begin;
+                        agent->state_timeout = 0;
+                        agent->state_stay = 0;
 
-                        //add ap event, handle by ap state machine
-                        struct ap_event *e = calloc(1, sizeof(struct ap_event));
-                        e->ap = ap;
-                        LIST_ADD_HEAD(struct ap_event, &priv->ap_events, e);
                     }
                 }
-                ap->status.last_seen = priv->ap_list_synced_time;
+                agent->status.last_seen = priv->agent_list_synced_time;
             }
         }
     }
     cJSON_Delete(root);
 #if 1
-    if (priv->ap_list_synced) {
-        for (size_t i = 0; i < sizeof(priv->aps)/sizeof(priv->aps[0]); i++) {
-            struct ap *ap = priv->aps[i];
-            while (ap) {
-                MG_INFO(("[aplist][index: %d, synced at %llu] ap: %s, ip: %s, connected: %llu, last_seen: %llu, state: %d,  online: %d",
-                i, priv->ap_list_synced_time, ap->info.dev_id, ap->status.ip,
-                ap->status.connected, ap->status.last_seen, ap->state, priv->ap_list_synced_time == ap->status.last_seen));
-                ap = ap->next;
+    if (priv->agent_list_synced) {
+        for (size_t i = 0; i < sizeof(priv->agents)/sizeof(priv->agents[0]); i++) {
+            struct agent *agent = priv->agents[i];
+            while (agent) {
+                MG_INFO(("[agent list][index: %d, synced at %llu] agent: %s, ip: %s, connected: %llu, last_seen: %llu, state: %d,  online: %d",
+                i, priv->agent_list_synced_time, agent->info.dev_id, agent->status.ip,
+                agent->status.connected, agent->status.last_seen, agent->state, priv->agent_list_synced_time == agent->status.last_seen));
+                agent = agent->next;
             }
         }
     }
@@ -169,14 +162,14 @@ static void mqtt_ev_mqtt_msg_mqtt_state_cb(struct mg_connection *c, int ev, void
 }
 
 static void mqtt_ev_mqtt_msg_rpc_resp_cb(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
-    // get ap and state
-    struct apmgr_private *priv = (struct apmgr_private*)c->mgr->userdata;
+    // get agent and state
+    struct controller_private *priv = (struct controller_private*)c->mgr->userdata;
     struct mg_mqtt_message *mm = (struct mg_mqtt_message *)ev_data;
-    char dev_id[AP_ATTRIBUTE_LENGTH] = {0};
+    char dev_id[AGENT_ATTRIBUTE_LENGTH] = {0};
     int state = 0;
     char *topic = mg_mprintf("%.*s", (int) mm->topic.len, mm->topic.ptr);
-    // device/10:16:88:19:51:E8/rpc/response/apmgr/2
-    int count = sscanf(topic, "device/%[^/rpc]/rpc/response/apmgr/%d", dev_id, &state);
+    // device/10:16:88:19:51:E8/rpc/response/iot-controller/2
+    int count = sscanf(topic, "device/%[^/rpc]/rpc/response/iot-controller/%d", dev_id, &state);
     if (count != 2) {
         MG_ERROR(("invalid rpc response topic: %s, count: %d, dev_id: %s, state: %d", topic, count, dev_id, state));
         free(topic);
@@ -187,30 +180,44 @@ static void mqtt_ev_mqtt_msg_rpc_resp_cb(struct mg_connection *c, int ev, void *
 
     //MG_INFO(("rpc response from %s, state: %d", dev_id, state));
     uint32_t crc = mg_crc32(0, dev_id, strlen(dev_id));
-    struct ap *ap = priv->aps[crc % AP_HASH_SIZE];
-    while (ap) {
-        if (!mg_casecmp(ap->info.dev_id, dev_id)) {// maybe different dev_id, but same crc
+    struct agent *agent = priv->agents[crc % AGENT_HASH_SIZE];
+    while (agent) {
+        if (!mg_casecmp(agent->info.dev_id, dev_id)) {// maybe different dev_id, but same crc
             break;
         }
-        ap = ap->next;
+        agent = agent->next;
     }
-    if (ap == NULL) {
-        MG_ERROR(("ap not found: %s", dev_id));
+    if (agent == NULL) {
+        MG_ERROR(("agent not found: %s", dev_id));
         return;
     }
-    if (ap->state != state) {
-        MG_ERROR(("ap state not match: %s, state: %d, expect: %d", dev_id, state, ap->state));
+    if (agent->state != state) {
+        MG_ERROR(("agent state not match: %s, state: %d, expect: %d", dev_id, state, agent->state));
         return;
     }
 
-    if (handle_rpc_response(c->mgr, ap, mm->data)) {
+    struct handle_result result = handle_rpc_response(c->mgr, agent, mm->data);
+    if ( result.code ) {
         MG_ERROR(("handle rpc response failed"));
         return;
     }
 
-    MG_INFO(("ap state update: %s, state: %d -> %d", ap->info.dev_id, ap->state, ap->state + 1));
-    ap->state = ap->state + 1; //enter next state(finished state)
-    ap->state_timeout = 0;
+    int next_state = agent->state + 1;
+    if (result.next_state > 0 ) {
+        next_state = result.next_state;
+    }
+
+    int next_state_stay = 0;
+    if (result.next_state_stay > 0) {
+        next_state_stay = result.next_state_stay;
+    }
+
+    int next_state_timeout = 0;
+
+    MG_INFO(("agent state update: %s, state: %d -> %d, next state stay: %d", agent->info.dev_id, agent->state, next_state, next_state_stay));
+    agent->state = next_state; //enter next state
+    agent->state_timeout = next_state_timeout;
+    agent->state_stay = next_state_stay;
 }
 
 static void mqtt_ev_mqtt_msg_cb(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
@@ -221,9 +228,9 @@ static void mqtt_ev_mqtt_msg_cb(struct mg_connection *c, int ev, void *ev_data, 
 
     if (!mg_strcmp(mm->topic, mg_str("$iot-mqtt-events"))) { //connect or disconnect event from mqtt server
         mqtt_ev_mqtt_msg_mqtt_events_cb(c, ev, ev_data, fn_data);
-    } else if (!mg_strcmp(mm->topic, mg_str("mg/apmgr/state"))) { //ap list from mqtt server
+    } else if (!mg_strcmp(mm->topic, mg_str("mg/iot-controller/state"))) { //iot-controller list from mqtt server
         mqtt_ev_mqtt_msg_mqtt_state_cb(c, ev, ev_data, fn_data);
-    } else if (mg_match(mm->topic, mg_str("device/*/rpc/response/apmgr/*"), NULL)) { //from iot-rpcd of ap
+    } else if (mg_match(mm->topic, mg_str("device/*/rpc/response/iot-controller/*"), NULL)) { //from iot-rpcd of agent
         mqtt_ev_mqtt_msg_rpc_resp_cb(c, ev, ev_data, fn_data);
     }
 }
@@ -264,7 +271,7 @@ static void mqtt_cb(struct mg_connection *c, int ev, void *ev_data, void *fn_dat
 // Timer function - recreate client connection if it is closed
 void timer_mqtt_fn(void *arg) {
     struct mg_mgr *mgr = (struct mg_mgr *)arg;
-    struct apmgr_private *priv = (struct apmgr_private*)mgr->userdata;
+    struct controller_private *priv = (struct controller_private*)mgr->userdata;
     uint64_t now = mg_millis();
 
     if (priv->mqtt_conn == NULL) {
@@ -275,7 +282,7 @@ void timer_mqtt_fn(void *arg) {
         priv->mqtt_conn = mg_mqtt_connect(mgr, priv->cfg.opts->mqtt_serve_address, &opts, mqtt_cb, NULL);
         priv->ping_active = now;
         priv->pong_active = now;
-        priv->ap_list_synced = false; //need sync ap list from mqtt server
+        priv->agent_list_synced = false; //need sync agent list from mqtt server
 
     } else if (priv->cfg.opts->mqtt_keepalive) { //need keep alive
 

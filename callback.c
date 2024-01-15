@@ -2,13 +2,13 @@
 #include <lauxlib.h>
 #include <iot/mongoose.h>
 #include <iot/cJSON.h>
-#include "apmgr.h"
-#include "ap.h"
+#include "controller.h"
+#include "agent.h"
 
 // call callback lua function gen_rpc_request, return request, must free by caller
-// params: ap->state+1, ap->info.dev_id
-struct mg_str gen_rpc_request(struct mg_mgr *mgr, struct ap *ap) {
-    struct apmgr_private *priv = (struct apmgr_private *)mgr->userdata;
+// params: agent->state+1, agent->info.dev_id
+struct mg_str gen_rpc_request(struct mg_mgr *mgr, struct agent *agent) {
+    struct controller_private *priv = (struct controller_private *)mgr->userdata;
     const char *ret = NULL;
     struct mg_str request = MG_NULL_STR;
     lua_State *L = luaL_newstate();
@@ -16,7 +16,7 @@ struct mg_str gen_rpc_request(struct mg_mgr *mgr, struct ap *ap) {
     luaL_openlibs(L);
 
     if ( luaL_dofile(L, priv->cfg.opts->callback_lua) ) {
-        MG_ERROR(("lua dofile %s failed, ap: %s, state: %d", priv->cfg.opts->callback_lua, ap->info.dev_id, ap->state+1));
+        MG_ERROR(("lua dofile %s failed, agent: %s, state: %d", priv->cfg.opts->callback_lua, agent->info.dev_id, agent->state+1));
         goto done;
     }
 
@@ -26,8 +26,8 @@ struct mg_str gen_rpc_request(struct mg_mgr *mgr, struct ap *ap) {
         goto done;
     }
 
-    lua_pushinteger(L, ap->state+1);
-    lua_pushstring(L, ap->info.dev_id);
+    lua_pushinteger(L, agent->state+1);
+    lua_pushstring(L, agent->info.dev_id);
 
     if (lua_pcall(L, 2, 1, 0)) {//two param, one return values, zero error func
         MG_ERROR(("callback failed"));
@@ -52,19 +52,23 @@ done:
 }
 
 // call callback lua function handle_rpc_response, return 0 if success, other if failed
-// params: ap->state, ap->info.dev_id, response
-int handle_rpc_response(struct mg_mgr *mgr, struct ap *ap, struct mg_str response) {
-    struct apmgr_private *priv = (struct apmgr_private *)mgr->userdata;
+// params: agent->state, agent->info.dev_id, response
+struct handle_result handle_rpc_response(struct mg_mgr *mgr, struct agent *agent, struct mg_str response) {
+    struct controller_private *priv = (struct controller_private *)mgr->userdata;
     const char *ret = NULL;
-    cJSON *root = NULL, *code = NULL;
-    int ret_code = -1;
+    cJSON *root = NULL, *code = NULL, *next_state = NULL, *next_state_stay = NULL;
+    struct handle_result result = {
+        .code = -1,
+        .next_state = -1,
+        .next_state_stay = -1,
+    };
     lua_State *L = luaL_newstate();
     char *resp = mg_mprintf("%.*s", (int)response.len, response.ptr);
 
     luaL_openlibs(L);
 
     if ( luaL_dofile(L, priv->cfg.opts->callback_lua) ) {
-        MG_ERROR(("lua dofile %s failed, ap: %s, state: %d", priv->cfg.opts->callback_lua, ap->info.dev_id, ap->state));
+        MG_ERROR(("lua dofile %s failed, agent: %s, state: %d", priv->cfg.opts->callback_lua, agent->info.dev_id, agent->state));
         goto done;
     }
 
@@ -74,8 +78,8 @@ int handle_rpc_response(struct mg_mgr *mgr, struct ap *ap, struct mg_str respons
         goto done;
     }
 
-    lua_pushinteger(L, ap->state);
-    lua_pushstring(L, ap->info.dev_id);
+    lua_pushinteger(L, agent->state);
+    lua_pushstring(L, agent->info.dev_id);
     lua_pushstring(L, resp);
 
     if (lua_pcall(L, 3, 1, 0)) {//three params, one return values, zero error func
@@ -89,11 +93,19 @@ int handle_rpc_response(struct mg_mgr *mgr, struct ap *ap, struct mg_str respons
         goto done;
     }
 
-    MG_INFO(("ap: %s, state: %d, ret: %s", ap->info.dev_id, ap->state, ret));
+    MG_INFO(("agent: %s, state: %d, ret: %s", agent->info.dev_id, agent->state, ret));
     root = cJSON_Parse(ret);
     code = cJSON_GetObjectItem(root, "code");
     if (cJSON_IsNumber(code) ) {
-       ret_code = (int)cJSON_GetNumberValue(code);
+       result.code = (int)cJSON_GetNumberValue(code);
+    }
+    next_state = cJSON_GetObjectItem(root, "next_state");
+    if (cJSON_IsNumber(next_state) ) {
+       result.next_state = (int)cJSON_GetNumberValue(next_state);
+    }
+    next_state_stay = cJSON_GetObjectItem(root, "next_state_stay");
+    if (cJSON_IsNumber(next_state_stay) ) {
+       result.next_state_stay = (int)cJSON_GetNumberValue(next_state_stay);
     }
 
 done:
@@ -104,5 +116,5 @@ done:
     if (root)
         cJSON_Delete(root);
 
-    return ret_code;
+    return result;
 }

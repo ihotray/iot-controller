@@ -1,13 +1,13 @@
 #include <iot/mongoose.h>
 #include <iot/iot.h>
-#include "apmgr.h"
+#include "controller.h"
 #include "callback.h"
 
-static void start_ap_list_sync(struct mg_mgr *mgr) {
-    struct apmgr_private *priv = (struct apmgr_private *)mgr->userdata;
+static void start_agent_list_sync(struct mg_mgr *mgr) {
+    struct controller_private *priv = (struct controller_private *)mgr->userdata;
     struct mg_mqtt_opts pub_opts;
     memset(&pub_opts, 0, sizeof(pub_opts));
-    pub_opts.topic = mg_str("mg/apmgr/state/$iot-mqtt");
+    pub_opts.topic = mg_str("mg/iot-controller/state/$iot-mqtt");
     pub_opts.message = mg_str("{\"method\": \"$mqtt/clients\"}");
     pub_opts.qos = MQTT_QOS, pub_opts.retain = false;
     mg_mqtt_pub(priv->mqtt_conn, &pub_opts);
@@ -15,34 +15,40 @@ static void start_ap_list_sync(struct mg_mgr *mgr) {
         (int) pub_opts.topic.len, pub_opts.topic.ptr));
 }
 
-static void do_ap_state_update(struct mg_mgr *mgr, struct ap *ap) {
+static void do_agent_state_update(struct mg_mgr *mgr, struct agent *agent) {
 
-    struct apmgr_private *priv = (struct apmgr_private *)mgr->userdata;
-    if (ap->state < priv->cfg.opts->state_begin || ap->state >= priv->cfg.opts->state_end) {
-        MG_ERROR(("invalid ap[%s] state: %d", ap->info.dev_id, ap->state));
+    struct controller_private *priv = (struct controller_private *)mgr->userdata;
+    if (agent->state < priv->cfg.opts->state_begin || agent->state >= priv->cfg.opts->state_end) {
+        MG_ERROR(("invalid agent[%s] state: %d", agent->info.dev_id, agent->state));
         return;
     }
 
-    if (ap->state_timeout > 0) { //wait for response
-        if (mg_millis() > ap->state_timeout) {
-            MG_INFO(("ap state update timeout: %s, state: %d -> %d", ap->info.dev_id, ap->state, ap->state - 1));
-            ap->state = ap->state - 1; //enter prev state
-            ap->state_timeout = 0;
+    if (agent->state_timeout > 0) { //wait for response
+        if (mg_millis() > agent->state_timeout) {
+            MG_INFO(("agent state update timeout: %s, state: %d -> %d", agent->info.dev_id, agent->state, agent->state - 1));
+            agent->state = agent->state - 1; //enter prev state
+            agent->state_timeout = 0;
+            agent->state_stay = 0;
         }
     } else {
 
+        if (agent->state_stay > 0) {
+            agent->state_stay = agent->state_stay - 1;
+            return;
+        }
+
         //gen request from callback lua
-        struct mg_str request = gen_rpc_request(mgr, ap);
+        struct mg_str request = gen_rpc_request(mgr, agent);
         if (!request.ptr) {
             MG_ERROR(("gen_rpc_request failed"));
             return;
         }
 
-        MG_INFO(("ap state update %s, state: %d -> %d", ap->info.dev_id, ap->state, ap->state + 1));
-        ap->state = ap->state + 1; //enter next state
-        ap->state_timeout = mg_millis() + priv->cfg.opts->state_timeout*1000; //set timeout
+        MG_INFO(("agent state update %s, state: %d -> %d", agent->info.dev_id, agent->state, agent->state + 1));
+        agent->state = agent->state + 1; //enter next state
+        agent->state_timeout = mg_millis() + priv->cfg.opts->state_timeout*1000; //set timeout
 
-        char *topic = mg_mprintf("device/%s/rpc/request/apmgr/%d", ap->info.dev_id, ap->state);
+        char *topic = mg_mprintf("device/%s/rpc/request/iot-controller/%d", agent->info.dev_id, agent->state);
         struct mg_mqtt_opts pub_opts;
         memset(&pub_opts, 0, sizeof(pub_opts));
         pub_opts.topic = mg_str(topic);
@@ -58,34 +64,47 @@ static void do_ap_state_update(struct mg_mgr *mgr, struct ap *ap) {
     }
 }
 
-static void start_ap_state_update(struct mg_mgr *mgr) {
-    struct apmgr_private *priv = (struct apmgr_private *)mgr->userdata;
-    struct ap_event *e = priv->ap_events;
-    while (e) {
-        struct ap_event *tmp = e->next;
-        if (e->ap->status.last_seen != priv->ap_list_synced_time || //offline
-            e->ap->state == priv->cfg.opts->state_end) {//all synced, finish
-            LIST_DELETE(struct ap_event, &priv->ap_events, e);
-            MG_INFO(("ap[%s] state update finish", e->ap->info.dev_id));
-            free(e);
-        } else {
-            do_ap_state_update(mgr, e->ap);
+static void start_agent_state_update(struct mg_mgr *mgr) {
+
+    struct controller_private *priv = (struct controller_private *)mgr->userdata;
+    for (size_t i = 0; i < sizeof(priv->agents)/sizeof(priv->agents[0]); i++) {
+        struct agent *agent = priv->agents[i];
+        while (agent) {
+            if (agent->status.last_seen != priv->agent_list_synced_time || //offline
+                agent->state == priv->cfg.opts->state_end) {//all synced, finish
+            } else {
+                do_agent_state_update(mgr, agent);
+            }
+            agent = agent->next;
         }
-        e = tmp;
     }
 }
 
 
 void timer_state_fn(void *arg) {
     struct mg_mgr *mgr = (struct mg_mgr *)arg;
-    struct apmgr_private *priv = (struct apmgr_private *)mgr->userdata;
+    struct controller_private *priv = (struct controller_private *)mgr->userdata;
+
+    if (priv->reset_agent) {
+        priv->reset_agent = 0;
+        for (size_t i = 0; i < sizeof(priv->agents)/sizeof(priv->agents[0]); i++) {// reset agents
+            struct agent *agent = priv->agents[i];
+            while (agent) {
+                agent->state = priv->cfg.opts->state_begin;
+                agent->state_timeout = 0;
+                agent->state_stay = 0;
+                agent = agent->next;
+            }
+        }
+        MG_INFO(("reset all agents state"));
+    }
 
     if (!priv->mqtt_conn) return;
 
-    if (!priv->ap_list_synced) {
-        start_ap_list_sync(mgr);
+    if (!priv->agent_list_synced) {
+        start_agent_list_sync(mgr);
     } else {
-        start_ap_state_update(mgr);
+        start_agent_state_update(mgr);
     }
 
 }
