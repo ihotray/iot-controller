@@ -16,9 +16,17 @@ struct agent_status {
     char ip[AGENT_ATTRIBUTE_LENGTH];
 };
 
+struct agent;
+struct agent_list {
+    struct agent_list *next;
+    struct agent *agent;
+};
+
 struct agent {
     /* data */
+    struct agent_list list;
     struct agent *next;
+
     struct agent_info info;
     struct agent_status status;
 

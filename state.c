@@ -67,16 +67,13 @@ static void do_agent_state_update(struct mg_mgr *mgr, struct agent *agent) {
 static void start_agent_state_update(struct mg_mgr *mgr) {
 
     struct controller_private *priv = (struct controller_private *)mgr->userdata;
-    for (size_t i = 0; i < sizeof(priv->agents)/sizeof(priv->agents[0]); i++) {
-        struct agent *agent = priv->agents[i];
-        while (agent) {
-            if (agent->status.last_seen != priv->agent_list_synced_time || //offline
-                agent->state == priv->cfg.opts->state_end) {//all synced, finish
-            } else {
-                do_agent_state_update(mgr, agent);
-            }
-            agent = agent->next;
+    for (struct agent_list *agent_list = priv->agent_list; agent_list; agent_list = agent_list->next) {
+        struct agent *agent = agent_list->agent;
+        if (agent->status.last_seen != priv->agent_list_synced_time || //offline
+            agent->state == priv->cfg.opts->state_end) {//all synced, finish
+            continue;
         }
+        do_agent_state_update(mgr, agent);
     }
 }
 
@@ -87,14 +84,12 @@ void timer_state_fn(void *arg) {
 
     if (priv->reset_all_agents) {
         priv->reset_all_agents = 0;
-        for (size_t i = 0; i < sizeof(priv->agents)/sizeof(priv->agents[0]); i++) {// reset agents
-            struct agent *agent = priv->agents[i];
-            while (agent) {
-                agent->state = priv->cfg.opts->state_begin;
-                agent->state_timeout = 0;
-                agent->state_stay = 0;
-                agent = agent->next;
-            }
+        // reset agents
+        for (struct agent_list *agent_list = priv->agent_list; agent_list; agent_list = agent_list->next) {
+            struct agent *agent = agent_list->agent;
+            agent->state = priv->cfg.opts->state_begin;
+            agent->state_timeout = 0;
+            agent->state_stay = 0;
         }
         MG_INFO(("reset all agents state"));
     }

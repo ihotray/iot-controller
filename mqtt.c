@@ -124,11 +124,18 @@ static void mqtt_ev_mqtt_msg_mqtt_state_cb(struct mg_connection *c, int ev, void
                 if (agent == NULL) {
                     //add new agent
                     agent = calloc(1, sizeof(struct agent));
+                    if (!agent) {
+                        MG_ERROR(("calloc agent failed"));
+                        continue;
+                    }
+                    agent->list.agent = agent;
+
                     strncpy(agent->info.dev_id, id_str, sizeof(agent->info.dev_id)-1);
                     agent->status.connected = connected_t;
                     strncpy(agent->status.ip, ip_str, sizeof(agent->status.ip)-1);
                     agent->state = priv->cfg.opts->state_begin;
                     LIST_ADD_HEAD(struct agent, &priv->agents[index], agent);
+                    LIST_ADD_HEAD(struct agent_list, &priv->agent_list, &agent->list);
 
                 } else {
                     if (agent->status.connected < connected_t) { //handle reconnected same dev_id

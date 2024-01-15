@@ -34,8 +34,8 @@ struct controller_private {
 
     int reset_all_agents; //reset agent state
 
-    struct agent *agents[AGENT_HASH_SIZE];  //store agent in a hash list, hash by crc(agent->info.dev_id), always add or update, never delete
-
+    struct agent *agents[AGENT_HASH_SIZE];  //store agents in a hash list, hash by crc(agent->info.dev_id), always add or update, never delete
+    struct agent_list *agent_list; //store all agents in a list
 };
 
 int controller_main(void *user_options);
