@@ -73,13 +73,6 @@ void controller_exit(void *handle) {
         }
     }
 
-    struct agent_event *e = priv->agent_events;
-    while (e) { //free events
-        struct agent_event *tmp = e->next;
-        LIST_DELETE(struct agent_event, &priv->agent_events, e);
-        free(e);
-        e = tmp;
-    }
     free(handle);
 }
 

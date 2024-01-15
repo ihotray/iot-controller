@@ -85,8 +85,8 @@ void timer_state_fn(void *arg) {
     struct mg_mgr *mgr = (struct mg_mgr *)arg;
     struct controller_private *priv = (struct controller_private *)mgr->userdata;
 
-    if (priv->reset_agent) {
-        priv->reset_agent = 0;
+    if (priv->reset_all_agents) {
+        priv->reset_all_agents = 0;
         for (size_t i = 0; i < sizeof(priv->agents)/sizeof(priv->agents[0]); i++) {// reset agents
             struct agent *agent = priv->agents[i];
             while (agent) {

@@ -4,6 +4,7 @@
 #include <iot/cJSON.h>
 #include "controller.h"
 #include "agent.h"
+#include "callback.h"
 
 // call callback lua function gen_rpc_request, return request, must free by caller
 // params: agent->state+1, agent->info.dev_id
