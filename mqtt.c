@@ -172,34 +172,38 @@ static void mqtt_ev_mqtt_msg_rpc_resp_cb(struct mg_connection *c, int ev, void *
     // get agent and state
     struct controller_private *priv = (struct controller_private*)c->mgr->userdata;
     struct mg_mqtt_message *mm = (struct mg_mqtt_message *)ev_data;
-    char dev_id[AGENT_ATTRIBUTE_LENGTH] = {0};
+    char s_state[32] = {0};
     int state = 0;
-    char *topic = mg_mprintf("%.*s", (int) mm->topic.len, mm->topic.ptr);
-    // device/10:16:88:19:51:E8/rpc/response/iot-controller/2
-    int count = sscanf(topic, "device/%[^/rpc]/rpc/response/iot-controller/%d", dev_id, &state);
-    if (count != 2) {
-        MG_ERROR(("invalid rpc response topic: %s, count: %d, dev_id: %s, state: %d", topic, count, dev_id, state));
-        free(topic);
+    // device/1/rpc/response/iot-controller/2
+    struct mg_str topic_prefix = mg_str("device/");
+    struct mg_str topic_postfix = mg_str("/rpc/response/iot-controller/");
+
+    const char *p = mg_strstr(mm->topic, topic_postfix);
+    if (!p) {
+        MG_ERROR(("invalid rpc response topic: %.*s", mm->topic.len, mm->topic.ptr));
         return;
     }
 
-    free(topic);
+    struct mg_str str_dev_id = mg_str_n(mm->topic.ptr + topic_prefix.len, p - mm->topic.ptr - topic_prefix.len);
+    struct mg_str str_state = mg_str_n(p + topic_postfix.len, mm->topic.len - (p - mm->topic.ptr) - topic_postfix.len);
 
-    //MG_INFO(("rpc response from %s, state: %d", dev_id, state));
-    uint32_t crc = mg_crc32(0, dev_id, strlen(dev_id));
+    MG_INFO(("rpc response from %.*s, state: %.*s", str_dev_id.len, str_dev_id.ptr, str_state.len, str_state.ptr));
+    uint32_t crc = mg_crc32(0, str_dev_id.ptr, str_dev_id.len);
     struct agent *agent = priv->agents[crc % AGENT_HASH_SIZE];
     while (agent) {
-        if (!mg_casecmp(agent->info.dev_id, dev_id)) {// maybe different dev_id, but same crc
+        if (!mg_strcmp(mg_str(agent->info.dev_id), str_dev_id)) {// maybe different dev_id, but same crc
             break;
         }
         agent = agent->next;
     }
     if (agent == NULL) {
-        MG_ERROR(("agent not found: %s", dev_id));
+        MG_ERROR(("agent not found: %.*s", str_dev_id.len, str_dev_id.ptr));
         return;
     }
+    mg_snprintf(s_state, sizeof(s_state)-1, "%.*s", str_state.len, str_state.ptr);
+    state = atoi(s_state);
     if (agent->state != state) {
-        MG_ERROR(("agent state not match: %s, state: %d, expect: %d", dev_id, state, agent->state));
+        MG_ERROR(("agent state not match:  %.*s, state: %d, expect: %d", str_dev_id.len, str_dev_id.ptr, state, agent->state));
         return;
     }
 
