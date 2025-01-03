@@ -93,8 +93,8 @@ static void mqtt_ev_mqtt_msg_mqtt_state_cb(struct mg_connection *c, int ev, void
     cJSON *code = cJSON_GetObjectItem(root, "code");
     cJSON *data = cJSON_GetObjectItem(root, "data");
     if (cJSON_IsNumber(code) && (int)cJSON_GetNumberValue(code) == 0) {
-        priv->agent_list_synced = true;
         priv->agent_list_synced_time = mg_millis()/1000;
+        priv->agent_list_synced = true;
         if (cJSON_IsArray(data)) {
             int size = cJSON_GetArraySize(data);
             for (int i = 0; i < size; i++) {
@@ -310,5 +310,11 @@ void timer_mqtt_fn(void *arg) {
             priv->ping_active = now;
         }
     }
+
+#if 1
+    if (now/1000 - priv->agent_list_synced_time > 60 && priv->agent_list_synced) { //sync agent list every 60s
+        priv->agent_list_synced = false;
+    }
+#endif
 
 }
