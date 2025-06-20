@@ -5,16 +5,16 @@
 #include "agent.h"
 #include "callback.h"
 
-static void mqtt_ev_open_cb(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
+static void mqtt_ev_open_cb(struct mg_connection *c, int ev, void *ev_data) {
     MG_INFO(("mqtt client connection created"));
 }
 
-static void mqtt_ev_error_cb(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
+static void mqtt_ev_error_cb(struct mg_connection *c, int ev, void *ev_data) {
     MG_ERROR(("%p %s", c->fd, (char *) ev_data));
     c->is_closing = 1;
 }
 
-static void mqtt_ev_poll_cb(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
+static void mqtt_ev_poll_cb(struct mg_connection *c, int ev, void *ev_data) {
 
     struct controller_private *priv = (struct controller_private*)c->mgr->userdata;
     if (!priv->cfg.opts->mqtt_keepalive) //no keepalive
@@ -30,7 +30,7 @@ static void mqtt_ev_poll_cb(struct mg_connection *c, int ev, void *ev_data, void
 
 }
 
-static void mqtt_ev_close_cb(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
+static void mqtt_ev_close_cb(struct mg_connection *c, int ev, void *ev_data) {
 
     struct controller_private *priv = (struct controller_private*)c->mgr->userdata;
     MG_INFO(("mqtt client connection closed"));
@@ -38,7 +38,7 @@ static void mqtt_ev_close_cb(struct mg_connection *c, int ev, void *ev_data, voi
 
 }
 
-static void mqtt_ev_mqtt_open_cb(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
+static void mqtt_ev_mqtt_open_cb(struct mg_connection *c, int ev, void *ev_data) {
 
     struct mg_str subt_mqtt_event = mg_str("$iot-mqtt-events");
     struct mg_str subt_mqtt_state = mg_str("mg/iot-controller/state");
@@ -52,21 +52,21 @@ static void mqtt_ev_mqtt_open_cb(struct mg_connection *c, int ev, void *ev_data,
     sub_opts.topic = subt_mqtt_event;
     sub_opts.qos = MQTT_QOS;
     mg_mqtt_sub(c, &sub_opts);
-    MG_INFO(("subscribed to %.*s", (int) subt_mqtt_event.len, subt_mqtt_event.ptr));
+    MG_INFO(("subscribed to %.*s", (int) subt_mqtt_event.len, subt_mqtt_event.buf));
 
     sub_opts.topic = subt_mqtt_state;
     mg_mqtt_sub(c, &sub_opts);
 
-    MG_INFO(("subscribed to %.*s", (int) subt_mqtt_state.len, subt_mqtt_state.ptr));
+    MG_INFO(("subscribed to %.*s", (int) subt_mqtt_state.len, subt_mqtt_state.buf));
 
     sub_opts.topic = subt_rpc_response;
     mg_mqtt_sub(c, &sub_opts);
 
-    MG_INFO(("subscribed to %.*s", (int) subt_rpc_response.len, subt_rpc_response.ptr));
+    MG_INFO(("subscribed to %.*s", (int) subt_rpc_response.len, subt_rpc_response.buf));
 
 }
 
-static void mqtt_ev_mqtt_cmd_cb(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
+static void mqtt_ev_mqtt_cmd_cb(struct mg_connection *c, int ev, void *ev_data) {
 
     struct mg_mqtt_message *mm = (struct mg_mqtt_message *) ev_data;
     struct controller_private *priv = (struct controller_private*)c->mgr->userdata;
@@ -76,7 +76,7 @@ static void mqtt_ev_mqtt_cmd_cb(struct mg_connection *c, int ev, void *ev_data, 
     }
 }
 
-static void mqtt_ev_mqtt_msg_mqtt_events_cb(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
+static void mqtt_ev_mqtt_msg_mqtt_events_cb(struct mg_connection *c, int ev, void *ev_data) {
     struct mg_mqtt_message *mm = (struct mg_mqtt_message *)ev_data;
     struct controller_private *priv = (struct controller_private*)c->mgr->userdata;
     if (!mg_strcmp(mm->data, mg_str("connected")) || !mg_strcmp(mm->data, mg_str("disconnected"))) {
@@ -86,10 +86,10 @@ static void mqtt_ev_mqtt_msg_mqtt_events_cb(struct mg_connection *c, int ev, voi
     }
 }
 
-static void mqtt_ev_mqtt_msg_mqtt_state_cb(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
+static void mqtt_ev_mqtt_msg_mqtt_state_cb(struct mg_connection *c, int ev, void *ev_data) {
     struct mg_mqtt_message *mm = (struct mg_mqtt_message *)ev_data;
     struct controller_private *priv = (struct controller_private*)c->mgr->userdata;
-    cJSON *root = cJSON_ParseWithLength(mm->data.ptr, mm->data.len);
+    cJSON *root = cJSON_ParseWithLength(mm->data.buf, mm->data.len);
     cJSON *code = cJSON_GetObjectItem(root, "code");
     cJSON *data = cJSON_GetObjectItem(root, "data");
     if (cJSON_IsNumber(code) && (int)cJSON_GetNumberValue(code) == 0) {
@@ -168,27 +168,26 @@ static void mqtt_ev_mqtt_msg_mqtt_state_cb(struct mg_connection *c, int ev, void
 #endif
 }
 
-static void mqtt_ev_mqtt_msg_rpc_resp_cb(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
+static void mqtt_ev_mqtt_msg_rpc_resp_cb(struct mg_connection *c, int ev, void *ev_data) {
     // get agent and state
     struct controller_private *priv = (struct controller_private*)c->mgr->userdata;
     struct mg_mqtt_message *mm = (struct mg_mqtt_message *)ev_data;
-    char s_state[32] = {0};
-    int state = 0;
+    int state = -1;
     // device/1/rpc/response/iot-controller/2
-    struct mg_str topic_prefix = mg_str("device/");
-    struct mg_str topic_postfix = mg_str("/rpc/response/iot-controller/");
+    struct mg_str pattern = mg_str("device/*/rpc/response/iot-controller/*");
 
-    const char *p = mg_strstr(mm->topic, topic_postfix);
-    if (!p) {
-        MG_ERROR(("invalid rpc response topic: %.*s", mm->topic.len, mm->topic.ptr));
+    struct mg_str caps[3] = { {0, 0}, {0, 0}, {0, 0} }; // device_id, state, rpc_id
+
+    if (!mg_match(mm->topic, pattern, caps)) {
+        MG_ERROR(("invalid rpc response topic: %.*s", mm->topic.len, mm->topic.buf));
         return;
     }
 
-    struct mg_str str_dev_id = mg_str_n(mm->topic.ptr + topic_prefix.len, p - mm->topic.ptr - topic_prefix.len);
-    struct mg_str str_state = mg_str_n(p + topic_postfix.len, mm->topic.len - (p - mm->topic.ptr) - topic_postfix.len);
+    struct mg_str str_dev_id = caps[0];
+    struct mg_str str_state = caps[1];
 
-    MG_INFO(("rpc response from %.*s, state: %.*s", str_dev_id.len, str_dev_id.ptr, str_state.len, str_state.ptr));
-    uint32_t crc = mg_crc32(0, str_dev_id.ptr, str_dev_id.len);
+    MG_INFO(("rpc response from %.*s, state: %.*s", str_dev_id.len, str_dev_id.buf, str_state.len, str_state.buf));
+    uint32_t crc = mg_crc32(0, str_dev_id.buf, str_dev_id.len);
     struct agent *agent = priv->agents[crc % AGENT_HASH_SIZE];
     while (agent) {
         if (!mg_strcmp(mg_str(agent->info.dev_id), str_dev_id)) {// maybe different dev_id, but same crc
@@ -197,13 +196,17 @@ static void mqtt_ev_mqtt_msg_rpc_resp_cb(struct mg_connection *c, int ev, void *
         agent = agent->next;
     }
     if (agent == NULL) {
-        MG_ERROR(("agent not found: %.*s", str_dev_id.len, str_dev_id.ptr));
+        MG_ERROR(("agent not found: %.*s", str_dev_id.len, str_dev_id.buf));
         return;
     }
-    mg_snprintf(s_state, sizeof(s_state)-1, "%.*s", str_state.len, str_state.ptr);
-    state = atoi(s_state);
+
+    if (!mg_str_to_num(str_state, 10, &state, sizeof(state))) {
+        MG_ERROR(("invalid state: %.*s", str_state.len, str_state.buf));
+        return;
+    };
+
     if (agent->state != state) {
-        MG_ERROR(("agent state not match:  %.*s, state: %d, expect: %d", str_dev_id.len, str_dev_id.ptr, state, agent->state));
+        MG_ERROR(("agent state not match:  %.*s, state: %d, expect: %d", str_dev_id.len, str_dev_id.buf, state, agent->state));
         return;
     }
 
@@ -231,50 +234,50 @@ static void mqtt_ev_mqtt_msg_rpc_resp_cb(struct mg_connection *c, int ev, void *
     agent->state_stay = next_state_stay;
 }
 
-static void mqtt_ev_mqtt_msg_cb(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
+static void mqtt_ev_mqtt_msg_cb(struct mg_connection *c, int ev, void *ev_data) {
 
     struct mg_mqtt_message *mm = (struct mg_mqtt_message *)ev_data;
-    MG_INFO(("received %.*s <- %.*s", (int) mm->data.len, mm->data.ptr,
-        (int) mm->topic.len, mm->topic.ptr));
+    MG_INFO(("received %.*s <- %.*s", (int) mm->data.len, mm->data.buf,
+        (int) mm->topic.len, mm->topic.buf));
 
     if (!mg_strcmp(mm->topic, mg_str("$iot-mqtt-events"))) { //connect or disconnect event from mqtt server
-        mqtt_ev_mqtt_msg_mqtt_events_cb(c, ev, ev_data, fn_data);
+        mqtt_ev_mqtt_msg_mqtt_events_cb(c, ev, ev_data);
     } else if (!mg_strcmp(mm->topic, mg_str("mg/iot-controller/state"))) { //iot-controller list from mqtt server
-        mqtt_ev_mqtt_msg_mqtt_state_cb(c, ev, ev_data, fn_data);
+        mqtt_ev_mqtt_msg_mqtt_state_cb(c, ev, ev_data);
     } else if (mg_match(mm->topic, mg_str("device/*/rpc/response/iot-controller/*"), NULL)) { //from iot-rpcd of agent
-        mqtt_ev_mqtt_msg_rpc_resp_cb(c, ev, ev_data, fn_data);
+        mqtt_ev_mqtt_msg_rpc_resp_cb(c, ev, ev_data);
     }
 }
 
-static void mqtt_cb(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
+static void mqtt_cb(struct mg_connection *c, int ev, void *ev_data) {
 
     switch (ev) {
         case MG_EV_OPEN:
-            mqtt_ev_open_cb(c, ev, ev_data, fn_data);
+            mqtt_ev_open_cb(c, ev, ev_data);
             break;
 
         case MG_EV_ERROR:
-            mqtt_ev_error_cb(c, ev, ev_data, fn_data);
+            mqtt_ev_error_cb(c, ev, ev_data);
             break;
 
         case MG_EV_MQTT_OPEN:
-            mqtt_ev_mqtt_open_cb(c, ev, ev_data, fn_data);
+            mqtt_ev_mqtt_open_cb(c, ev, ev_data);
             break;
 
         case MG_EV_MQTT_CMD:
-            mqtt_ev_mqtt_cmd_cb(c, ev, ev_data, fn_data);
+            mqtt_ev_mqtt_cmd_cb(c, ev, ev_data);
             break;
 
         case MG_EV_MQTT_MSG:
-            mqtt_ev_mqtt_msg_cb(c, ev, ev_data, fn_data);
+            mqtt_ev_mqtt_msg_cb(c, ev, ev_data);
             break;
 
         case MG_EV_POLL:
-            mqtt_ev_poll_cb(c, ev, ev_data, fn_data);
+            mqtt_ev_poll_cb(c, ev, ev_data);
             break;
 
         case MG_EV_CLOSE:
-            mqtt_ev_close_cb(c, ev, ev_data, fn_data);
+            mqtt_ev_close_cb(c, ev, ev_data);
             break;
     }
 }

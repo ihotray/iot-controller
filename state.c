@@ -11,8 +11,8 @@ static void start_agent_list_sync(struct mg_mgr *mgr) {
     pub_opts.message = mg_str("{\"method\": \"$mqtt/clients\"}");
     pub_opts.qos = MQTT_QOS, pub_opts.retain = false;
     mg_mqtt_pub(priv->mqtt_conn, &pub_opts);
-    MG_INFO(("send %.*s -> %.*s", (int) pub_opts.message.len, pub_opts.message.ptr,
-        (int) pub_opts.topic.len, pub_opts.topic.ptr));
+    MG_INFO(("send %.*s -> %.*s", (int) pub_opts.message.len, pub_opts.message.buf,
+        (int) pub_opts.topic.len, pub_opts.topic.buf));
 }
 
 static void do_agent_state_update(struct mg_mgr *mgr, struct agent *agent) {
@@ -39,7 +39,7 @@ static void do_agent_state_update(struct mg_mgr *mgr, struct agent *agent) {
 
         //gen request from callback lua
         struct mg_str request = gen_rpc_request(mgr, agent);
-        if (!request.ptr) {
+        if (!request.buf) {
             MG_ERROR(("gen_rpc_request failed"));
             return;
         }
@@ -56,10 +56,10 @@ static void do_agent_state_update(struct mg_mgr *mgr, struct agent *agent) {
         pub_opts.qos = MQTT_QOS, pub_opts.retain = false;
         mg_mqtt_pub(priv->mqtt_conn, &pub_opts);
 
-        MG_INFO(("send %.*s -> %.*s", (int) pub_opts.message.len, pub_opts.message.ptr,
-            (int) pub_opts.topic.len, pub_opts.topic.ptr));
+        MG_INFO(("send %.*s -> %.*s", (int) pub_opts.message.len, pub_opts.message.buf,
+            (int) pub_opts.topic.len, pub_opts.topic.buf));
         free(topic);
-        free((void*)request.ptr);
+        free((void*)request.buf);
 
     }
 }

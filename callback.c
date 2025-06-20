@@ -11,7 +11,7 @@
 struct mg_str gen_rpc_request(struct mg_mgr *mgr, struct agent *agent) {
     struct controller_private *priv = (struct controller_private *)mgr->userdata;
     const char *ret = NULL;
-    struct mg_str request = MG_NULL_STR;
+    struct mg_str request = mg_str(NULL);
     lua_State *L = luaL_newstate();
 
     luaL_openlibs(L);
@@ -64,7 +64,7 @@ struct handle_result handle_rpc_response(struct mg_mgr *mgr, struct agent *agent
         .next_state_stay = -1,
     };
     lua_State *L = luaL_newstate();
-    char *resp = mg_mprintf("%.*s", (int)response.len, response.ptr);
+    char *resp = mg_mprintf("%.*s", (int)response.len, response.buf);
 
     luaL_openlibs(L);
 
