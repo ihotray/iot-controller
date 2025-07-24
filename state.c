@@ -74,6 +74,7 @@ static void start_agent_state_update(struct mg_mgr *mgr) {
             continue;
         }
         do_agent_state_update(mgr, agent);
+        usleep(1000);
     }
 }
 
